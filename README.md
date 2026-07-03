@@ -14,17 +14,18 @@ Built on **vLLM v0.24.0 compiled from source for sm_121a**, merged with the AEON
 
 ## Quickstart (DGX Spark, copy-paste)
 
-The canonical Spark recipe: **Qwen3.6-27B NVFP4 body + z-lab DFlash drafter + FP8 KV** — the measured-best daily-driver config. One block pulls the container, the model, and the drafter, then serves on `:8000`. (Full deployment matrix — MTP/NVFP4-KV, TurboQuant, Gemma-4-26B, dedicated-VRAM Blackwell — is in [Deployment recipes](#deployment-recipes) further down.)
+The canonical Spark recipe: **Qwen3.6-27B Multimodal-NVFP4-MTP body + z-lab DFlash drafter + FP8 KV** — the measured-best daily-driver config (parity speed with the smaller XS body, higher quality-eval scores). One block pulls the container, the model, and the drafter, then serves on `:8000`. (Full deployment matrix — MTP/NVFP4-KV, TurboQuant, Gemma-4-26B, dedicated-VRAM Blackwell — is in [Deployment recipes](#deployment-recipes) further down.)
 
 ```bash
-# 1) Pull the unified container (vLLM 0.23.0 + sm_121a + DFlash high-concurrency fix)
+# 1) Pull the unified container (vLLM 0.24.0 + sm_121a + DFlash high-concurrency fix)
 docker pull ghcr.io/aeon-7/aeon-vllm-ultimate:latest
 
-# 2) Pull the NVFP4 body (compressed-tensors, ~26 GB) — fresh clone
+# 2) Pull the recommended body — Multimodal-NVFP4-MTP (modelopt NVFP4, image+video capable;
+#    parity speed with the XS variant + higher quality-eval scores) — fresh clone
 GIT_LFS_SKIP_SMUDGE=1 git clone \
-  https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 \
-  /models/Qwen3.6-27B-AEON-NVFP4
-( cd /models/Qwen3.6-27B-AEON-NVFP4 && git lfs pull )
+  https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP \
+  /models/Qwen3.6-27B-AEON-MM-MTP
+( cd /models/Qwen3.6-27B-AEON-MM-MTP && git lfs pull )
 
 # 3) Pull the DFlash drafter (z-lab 5-layer, ~3.3 GB) — fresh clone (DFlash only)
 GIT_LFS_SKIP_SMUDGE=1 git clone \
@@ -36,14 +37,14 @@ GIT_LFS_SKIP_SMUDGE=1 git clone \
 docker run -d --name aeon-vllm \
     --gpus all --ipc=host --shm-size=16g \
     --net=host \
-    -v /models/Qwen3.6-27B-AEON-NVFP4:/model:ro \
+    -v /models/Qwen3.6-27B-AEON-MM-MTP:/model:ro \
     -v /models/Qwen3.6-27B-DFlash-drafter:/drafter:ro \
     --entrypoint vllm \
     ghcr.io/aeon-7/aeon-vllm-ultimate:latest \
     serve /model \
         --served-model-name aeon \
         --dtype auto \
-        --quantization compressed-tensors \
+        --quantization modelopt \
         --kv-cache-dtype fp8_e4m3 \
         --max-model-len 24576 \
         --max-num-seqs 8 \
@@ -248,7 +249,7 @@ This is the **measured-best config** for DGX Spark per the AEON-7 Qwen3.6 routin
 This is the recipe in the [top Quickstart](#quickstart-dgx-spark-copy-paste) — the full pull-container + pull-model + pull-drafter + serve block is there; don't duplicate it here. The serve flags below are the same ones; this section just explains each.
 
 **Key flags**:
-- `--quantization compressed-tensors` — the NVFP4 production model is in compressed-tensors format (`format: nvfp4-pack-quantized`), not modelopt. Use `--quantization modelopt` for the `*-MTP-XS` variants.
+- `--quantization modelopt` — the recommended **Multimodal-NVFP4-MTP** body is a modelopt NVFP4 checkpoint. (The older `-NVFP4` production body is compressed-tensors `format: nvfp4-pack-quantized` → use `--quantization compressed-tensors` for that one.)
 - `--kv-cache-dtype fp8_e4m3` — DFlash is non-causal and incompatible with NVFP4 KV on Spark today (see Recipe B for NVFP4 KV with MTP).
 - `--speculative-config '{"method":"dflash",...}'` — `method: "dflash"` is the native vLLM speculator (not `"speculators"`).
 - `--max-num-batched-tokens 8192` — must accommodate `num_speculative_tokens × max_num_seqs` plus headroom (vLLM warns if too low).
@@ -259,7 +260,7 @@ This is the recipe in the [top Quickstart](#quickstart-dgx-spark-copy-paste) —
 
 ### Recipe B — MTP self-speculation + NVFP4 KV (capacity-bound workloads)
 
-For workloads where **KV capacity is the bottleneck** (long context, many concurrent streams), use the modelopt MTP-XS body with NVFP4 KV cache. This is the only Spark recipe that exercises PR #44389's ~3× KV capacity gain today.
+For workloads where **KV capacity is the bottleneck** (long context, many concurrent streams), use the modelopt **MTP-XS** body with NVFP4 KV cache — the smaller body maximizes KV headroom. This is the only Spark recipe that exercises PR #44389's ~3× KV capacity gain today. *(If you have VRAM to spare and want higher-quality output, the full **Multimodal-NVFP4-MTP** body drops in here too, at a small KV-headroom cost.)*
 
 ```bash
 docker run -d --name aeon-vllm \
@@ -407,8 +408,9 @@ Same 8 generic prompts, `temperature=0.7`, `max_tokens=200`, `n_spec=4`. Use thi
 
 ### Headlines
 
-- **🏆 The winning config on Spark is the MTP-XS body + DFlash drafter (n=4) + BF16 KV.** Even though the body name says "MTP", it works great with an external DFlash drafter — and the **smaller body (21 GB vs 26 GB) leaves more compute and KV headroom**. Results: **+40% single-stream tok/s and +24% concurrent throughput vs the FP8-KV baseline.** Aggregate peak hits ~87 tok/s on 4 concurrent streams.
-- DFlash on the NVFP4 (compressed-tensors) body is also a big win (+12% single, +0.9% concurrent) but the heavier 26 GB body loses ground to the same drafter on the lighter XS body.
+- **🏆 The winning speed pattern on Spark is an MTP-format body + DFlash drafter (n=4) + BF16 KV.** Even though the body name says "MTP", it works great with an external DFlash drafter — and an MTP body **leaves more compute and KV headroom than the 26 GB compressed-tensors body**. Results vs the FP8-KV baseline: **+40% single-stream tok/s and +24% concurrent throughput**; aggregate peak ~87 tok/s on 4 concurrent streams. *(Speed rows below were measured on the smaller `-MTP-XS` body.)*
+- **✅ Recommended daily-driver body: `Multimodal-NVFP4-MTP` (the full, non-XS body).** In AEON-7's follow-up evals it runs at **parity speed with the XS body** while scoring **materially higher on quality benchmarks** — so it's the default when you have the VRAM (it's only slightly larger than XS). Keep the **`-MTP-XS`** body when footprint is tight. Both use `--quantization modelopt` and pair with the same z-lab DFlash drafter.
+- DFlash on the NVFP4 (compressed-tensors) body is also a big win (+12% single, +0.9% concurrent) but the heavier 26 GB body loses ground to the same drafter on the lighter MTP bodies.
 - **MTP + NVFP4 KV** is the only path to PR #44389's ~3× KV capacity gain. Use when capacity (long context, more streams) outweighs the ~30-40% lower throughput vs DFlash. NVFP4 KV is within ±1% of FP8 on throughput at this prompt size; the real benefit is **~3× more KV blocks** at the same memory budget.
 - **TPOT story is the cleanest signal.** DFlash + XS-body hits **40.8 ms/tok single-stream**, which is **28% faster than MTP** (57 ms) and **18% faster than DFlash on the heavier NVFP4 body** (50 ms). The drafter's n=4 acceptance and the smaller body's bandwidth advantage compound.
 - **Round-1 concurrent TTFT (~1.5–4.6 s) is cold-cache + spec-decode warm-up.** Steady-state TTFT is rounds 2–3 (typically ~250–500 ms).
@@ -432,11 +434,11 @@ This image is **purpose-built around the AEON-7 Qwen3.6 family** for DGX Spark. 
 
 | Model | Quant format | Spec method | Status | Notes |
 |---|---|---|---|---|
-| [AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) | compressed-tensors `nvfp4-pack-quantized` | DFlash drafter | ✅ **Canonical Spark recipe** — benchmarked in this card | Pair with [`z-lab/Qwen3.6-27B-DFlash`](https://huggingface.co/z-lab/Qwen3.6-27B-DFlash) as the drafter |
+| [AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP) | modelopt NVFP4 (GDN preserved BF16) | DFlash drafter (or native MTP) | ✅ **Recommended Spark daily-driver** — parity speed with XS, higher quality-eval scores | `--quantization modelopt`; pair with [`z-lab/Qwen3.6-27B-DFlash`](https://huggingface.co/z-lab/Qwen3.6-27B-DFlash); image+video capable |
+| [AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) | compressed-tensors `nvfp4-pack-quantized` | DFlash drafter | ✅ Benchmarked in this card (heavier 26 GB body) | Prefer the Multimodal-NVFP4-MTP body above; pair with [`z-lab/Qwen3.6-27B-DFlash`](https://huggingface.co/z-lab/Qwen3.6-27B-DFlash) |
 | [AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4](https://huggingface.co/AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4) | compressed-tensors `nvfp4-pack-quantized` | DFlash drafter | ✅ **Fleet-benchmarked** in the v0.23.0 section above | Drafter **must** use `attention_backend: flash_attn` on this image; pair with z-lab `gemma-4-26B-A4B-it-DFlash` |
 | [AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4](https://huggingface.co/AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4) | compressed-tensors `nvfp4-pack-quantized` | DFlash drafter | ✅ **Fleet-benchmarked** in the v0.23.0 section above | A3B MoE; 8-layer all-full-attn drafter (no SWA/`--mamba-block-size` needed); optimal n≈10–11 |
-| [AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS) | modelopt NVFP4 | qwen3_5_mtp (native) | ✅ MTP (text) benchmark below; vision runtime validation pending a GPU window | Dedicated-VRAM Blackwell only; MTP underperforms DFlash on Spark |
-| [AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP) | modelopt NVFP4 (GDN preserved BF16) | qwen3_5_mtp | ✅ Same recipe as XS, regular footprint | RTX PRO 6000 / B100/B200 |
+| [AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS) | modelopt NVFP4 | DFlash drafter (or native MTP) | ✅ Smallest footprint — speed rows benchmarked below | Min-VRAM option; step up to the full **Multimodal-NVFP4-MTP** for higher quality if VRAM allows. Native MTP-method underperforms DFlash on Spark |
 | [z-lab/Qwen3.6-27B-DFlash](https://huggingface.co/z-lab/Qwen3.6-27B-DFlash) | BF16 5-layer drafter (3.3 GB) | — | ✅ Pairs with `…-NVFP4` above | Drafter for DFlash recipe |
 | [AEON-7/Step-3.7-Flash-AEON-Ultimate-Abliterated-NVFP4](https://huggingface.co/AEON-7/Step-3.7-Flash-AEON-Ultimate-Abliterated-NVFP4) | NVFP4 (modelopt) | — | 🟡 Expected to work | 198B MoE — not yet smoke-tested in this image |
 
