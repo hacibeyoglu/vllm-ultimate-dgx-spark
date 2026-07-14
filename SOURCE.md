@@ -20,6 +20,15 @@ cd ..
 
 The full source is not vendored in this repo (~140 MB) — only the patches, Dockerfile, humming-stub, verify script, bench tooling, and bench artifacts.
 
+## 2026-07-14 — v0.25.0 rebuild (`:2026-07-14-v0.25.0` = `:latest`)
+
+- vLLM tree: `aeon-v0.25.0` = 3-way merge of tag `v0.25.0` (702f4814) onto `codex/aeon-v0.24.0-maxsafe-20260708` (v0.24.0 + prod cherry-picks). 23 conflicts: 12 pure-upstream new-model files (MiniMax-M3, moss_audio) taken as-is; 11 carry-critical files (triton NVFP4-KV cluster + runner/spec-decode cluster + docs) integrated by adversarially-verified cluster resolution.
+- **Carries kept:** #44389 (Triton NVFP4-KV), #40898 (DFlash SWA), #41703 (ctx-mask/Gemma4 batched-verify), dflash-blocktable-unpad, cudagraph_align_all_modes, UMA negative-estimate clamp, plus maxsafe carries #47356 (kv_cache_memory_bytes cache-hash exclusion), #45207 (Mamba page-pad), #47053. **Dropped:** #45544 tie_weights (now upstream). **Integrated from v0.25.0:** #42890 (NVFP4-KV SWA page-unify), #46761 (DFlash RMSNorm fusion), #45739 (NVFP4 swizzled-scale zero-init).
+- **Two silent-killer merge bugs caught + fixed:** #42890 renumbered `KVQuantMode.NVFP4` 4→5, our kernel's hard-coded `USE_NVFP4 = KV_QUANT_MODE == 4` sat in a non-conflict region → would have disabled ALL NVFP4 KV (fixed to `== 5`, enum value independently confirmed); two auto-merge SyntaxErrors in qwen3_dflash.py (duplicated `sliding_window` param + kwarg).
+- **MRv2 pin:** `VLLM_USE_V2_MODEL_RUNNER=0` baked (Phase 1) — v0.25.0 whitelists `method=dflash` for MRv2 with no fallback, so without the pin dense models silently lose our DFlash patches. Removed in Phase 2 when carries are ported to MRv2.
+- **Deps:** FlashInfer 0.6.12→0.6.13 (purge stale jit-cache), cutlass-dsl 4.5.2, torch 2.11.0 unchanged. torchcodec omitted (0.14 ABI-broken on torch 2.11; vLLM guards the import). Kept 12.1a arch (bare 12.1 → Marlin fallback), GCC 12, transformers 5.12.1, xgrammar>=0.2.1. humming-stub made permissive (v0.25.0 registry touches new humming dtypes/schema submodules).
+- **A/B before push (GB10, vs :2026-07-08-v0.24.0-maxsafe):** Gemma-4-26B 505–511 vs 559 tok/s @c16 (parity, CUTLASS FP4); Qwen3.6-35B-A3B 341 vs 348 @c12 (parity, Marlin — checkpoint lacks CUTLASS scales); Qwen3.6-27B 88 vs 100 @c8 (parity, CUTLASS). All: DFlash on V1, tools working, acceptance healthy. Artifacts: `AB_SUMMARY_v0250.md`. Rollback: `:2026-07-08-v0.24.0-maxsafe`.
+
 ## 2026-07-02 — v0.24.0 rebuild (`:2026-07-01-v0.24.0` = `:latest`)
 
 - vLLM tree: `aeon-v0.24.0` branch = 3-way merge of tag `v0.24.0` (ee0da84ab) into
