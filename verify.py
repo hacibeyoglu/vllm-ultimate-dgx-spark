@@ -47,5 +47,20 @@ except Exception as e:
     print(f"  vllm.LLM:    FAIL ({e})")
     sys.exit(1)
 
+try:
+    # Exercises the actual eager import path the model registry hits at boot
+    # (vllm/model_executor/models/qwen3_5.py -> ...gdn.qwen_gdn_linear_attn
+    # -> auto_awq -> kernels.linear -> humming_utils), not just a bare
+    # `from humming.dtypes import DataType`. humming_utils.py builds
+    # {humming_dtypes.<name>: dtype} tables at import time whenever the
+    # `humming` package is importable at all — regardless of chosen
+    # quantization method — so every dtype name it references must exist on
+    # the stub or model loading crashes before engine startup.
+    import vllm.model_executor.layers.quantization.utils.humming_utils  # noqa: F401
+    print(f"  humming_utils: importable (stub dtypes cover all referenced attrs)")
+except Exception as e:
+    print(f"  humming_utils: FAIL ({e})")
+    sys.exit(1)
+
 print()
 print("GREEN - aeon-vllm-ultimate ready")

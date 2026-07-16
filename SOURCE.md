@@ -1,24 +1,49 @@
 # vLLM source pin
 
-Build was against:
+Current build is against:
 
-- **Repo**: `lesj0610/vllm`
-- **Branch**: `lesj/triton-nvfp4-kv-fork-20260602`
-- **Commit**: `e8c77b85`
-- **Upstream PR**: [vllm-project/vllm#44389](https://github.com/vllm-project/vllm/pull/44389) — Triton software NVFP4 KV cache (~3× capacity)
-
-To reproduce the build:
-
-```bash
-git clone https://github.com/lesj0610/vllm.git vllm-src
-cd vllm-src
-git checkout lesj/triton-nvfp4-kv-fork-20260602
-git checkout e8c77b85
-cd ..
-# Then docker build -t aeon-vllm-ultimate:latest .
-```
+- **Branch**: `aeon-main-dspark` (local tree in `vllm-src/`)
+- **Base**: `vllm-project/vllm` main @ `2bd895762` (2026-07-15)
+- **Merge commit**: `d06f8cb25` (main merged into the AEON main-port tree)
 
 The full source is not vendored in this repo (~140 MB) — only the patches, Dockerfile, humming-stub, verify script, bench tooling, and bench artifacts.
+
+## 2026-07-15 — vLLM main rebase (`aeon-main-dspark`, V1 DFlash carries retired)
+
+- vLLM tree: `aeon-main-dspark` = upstream main @ `2bd895762` (2026-07-15) merged into the
+  main-port branch (which was main @ 2026-07-06 + the NVFP4-KV/UMA/cudagraph ports).
+  Merge commit `d06f8cb25`; 6 conflicted files, 11 hunks, all in the Triton NVFP4-KV
+  footprint (upstream #44455 packed-KV layout refactor).
+- **Carries dropped (now upstream, V2-native):** #40898 DFlash SWA (superseded by
+  merged #47914 + #48135 — hybrid SWA/full drafters on Model-Runner-V2; upstream
+  closed #40898 unmerged 2026-07-14), #41703 ctx-mask (V2 `prepare_dflash_inputs`
+  tracks `num_rejected` + `PAD_SLOT_ID` by construction), #43982-port blocktable
+  unpad (V2 `BlockTables` has no padded-shape bug), #47356/#45207/#47053 (upstream),
+  MRv2 V1 pin (**removed** — main force-routes mixed SWA/full DFlash drafters to V2;
+  the z-lab Qwen3.6-27B drafter is 4/5 SWA-2048, so it *requires* V2 now).
+- **Carries kept:** Triton NVFP4-KV (#44389 lineage, kernel-optimized + MRv2-wired;
+  upstream nvfp4 KV is still FlashInfer trtllm-gen SM100-only),
+  `aeon-cudagraph-align-nonfull` (#46324 port, V1-gated), `aeon-uma-negative-estimate-clamp`
+  (#46932 port), TurboQuant fork integration.
+- **Key merge resolution:** upstream #44455 packs K/V into the content dim
+  (`(B, H, N, 2*hs)`); the Triton NVFP4 path keeps its proven 5-dim
+  `(B, 2, N, H, full_dim)` split-KV layout via a dtype-aware
+  `get_kv_cache_stride_order(cache_dtype_str=...)` (both runners pass the per-spec
+  dtype with a TypeError fallback). `nvfp4_kv_cache_split_views` restored as a wrapper
+  over upstream's renamed `nvfp4_split_data_scale` (bodies verified identical).
+  Enum re-verified: `KVQuantMode.NVFP4 == 5` matches the kernel literal.
+- **Deps:** torch 2.11.0, FlashInfer 0.6.13, cutlass-dsl 4.5.2, transformers 5.12.1,
+  xgrammar>=0.2.1 — all unchanged (main pins match). torchcodec still omitted.
+- **Version string:** `0.26.0.dev0+aeon.sm121a.main20260715`.
+- ⚠️ **Not yet validated on GB10** — required gates before promoting to `:latest`:
+  long-context DFlash acceptance (2k/16k/33k), prefix-caching soak, c=64 concurrency
+  sweep, throughput A/B vs `:2026-07-14-v0.25.0`, tool-calling + multimodal smoke.
+  Rollback tag: `:2026-07-14-v0.25.0`.
+
+## Historical original pin (superseded)
+
+- **Repo**: `lesj0610/vllm`, branch `lesj/triton-nvfp4-kv-fork-20260602`, commit `e8c77b85`
+- **Upstream PR**: [vllm-project/vllm#44389](https://github.com/vllm-project/vllm/pull/44389) — Triton software NVFP4 KV cache (~3× capacity)
 
 ## 2026-07-14 — v0.25.0 rebuild (`:2026-07-14-v0.25.0` = `:latest`)
 
